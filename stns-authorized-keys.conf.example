@@ -4,6 +4,7 @@ ssl_verify = true
 request_timeout = 3
 request_retry = 3
 request_locktime = 5
+request_concurrency = 10
 log_level = "info"
 
 [tls]

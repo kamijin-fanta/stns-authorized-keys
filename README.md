@@ -26,6 +26,7 @@ ssl_verify = true
 request_timeout = 3
 request_retry = 3
 request_locktime = 5
+request_concurrency = 10
 log_level = "info"
 
 [tls]
@@ -50,7 +51,9 @@ production configurations should leave it `true` (the default).
 
 `request_retry` controls the number of upstream HTTP retries, and
 `request_locktime` controls how long this command waits to acquire the cache
-refresh lock. Set `cached.enable = false` to bypass the local cache entirely.
+refresh lock. `request_concurrency` limits concurrent upstream requests for
+groups and user keys, and defaults to `10` when omitted. Set
+`cached.enable = false` to bypass the local cache entirely.
 
 `[users.<login-user>]` maps the Linux user passed by sshd to STNS sources.
 `link_users` fetches those STNS users directly. `link_groups` fetches each STNS

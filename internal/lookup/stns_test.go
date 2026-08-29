@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,9 +39,12 @@ func TestFetchUserKeysRequestAndResponse(t *testing.T) {
 
 func TestResolveAuthorizedKeysResolvesUsersAndGroups(t *testing.T) {
 	requests := map[string]int{}
+	var requestsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
+		requestsMu.Lock()
 		requests[r.URL.Path+"?"+name]++
+		requestsMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/groups" && name == "operators":
@@ -76,8 +82,99 @@ func TestResolveAuthorizedKeysResolvesUsersAndGroups(t *testing.T) {
 		"/users?bob":        1,
 		"/users?carol":      1,
 	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
 	if !reflect.DeepEqual(requests, wantRequests) {
 		t.Fatalf("requests = %#v; want %#v", requests, wantRequests)
+	}
+}
+
+func TestResolveAuthorizedKeysLimitsConcurrentGroupRequests(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Query().Get("name")
+		if r.URL.Path == "/groups" {
+			current := active.Add(1)
+			defer active.Add(-1)
+			updateMaximum(&maximum, current)
+			time.Sleep(30 * time.Millisecond)
+			_, _ = fmt.Fprintf(w, `[{"name":%q,"users":[%q]}]`, name, name+"-user")
+			return
+		}
+		_, _ = fmt.Fprintf(w, `[{"name":%q,"keys":[%q]}]`, name, name+"-key")
+	}))
+	defer server.Close()
+
+	const concurrency = 3
+	resolver := newTestResolverWithConcurrency(
+		t,
+		server.URL,
+		"",
+		time.Second,
+		concurrency,
+		nil,
+	)
+	groups := make([]string, 9)
+	for index := range groups {
+		groups[index] = "group-" + strconv.Itoa(index)
+	}
+	keys, status, err := resolver.ResolveAuthorizedKeys(
+		context.Background(),
+		Sources{Groups: groups},
+	)
+	if err != nil || status != OK || len(keys) != len(groups) {
+		t.Fatalf("ResolveAuthorizedKeys() returned %d keys, %v, %v", len(keys), status, err)
+	}
+	if got := maximum.Load(); got != concurrency {
+		t.Fatalf("maximum concurrent group requests = %d, want %d", got, concurrency)
+	}
+}
+
+func TestResolveAuthorizedKeysLimitsConcurrentUserRequests(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		updateMaximum(&maximum, current)
+		time.Sleep(30 * time.Millisecond)
+		name := r.URL.Query().Get("name")
+		_, _ = fmt.Fprintf(w, `[{"name":%q,"keys":[%q]}]`, name, name+"-key")
+	}))
+	defer server.Close()
+
+	const concurrency = 3
+	resolver := newTestResolverWithConcurrency(
+		t,
+		server.URL,
+		"",
+		time.Second,
+		concurrency,
+		nil,
+	)
+	users := make([]string, 12)
+	for index := range users {
+		users[index] = "user-" + strconv.Itoa(index)
+	}
+	keys, status, err := resolver.ResolveAuthorizedKeys(
+		context.Background(),
+		Sources{Users: users},
+	)
+	if err != nil || status != OK || len(keys) != len(users) {
+		t.Fatalf("ResolveAuthorizedKeys() returned %d keys, %v, %v", len(keys), status, err)
+	}
+	if got := maximum.Load(); got != concurrency {
+		t.Fatalf("maximum concurrent requests = %d, want %d", got, concurrency)
+	}
+}
+
+func updateMaximum(maximum *atomic.Int32, current int32) {
+	for {
+		previous := maximum.Load()
+		if current <= previous || maximum.CompareAndSwap(previous, current) {
+			return
+		}
 	}
 }
 
@@ -281,6 +378,18 @@ func newTestResolver(
 	configure func(*libstns.Options),
 ) *Resolver {
 	t.Helper()
+	return newTestResolverWithConcurrency(t, endpoint, token, timeout, 10, configure)
+}
+
+func newTestResolverWithConcurrency(
+	t *testing.T,
+	endpoint string,
+	token string,
+	timeout time.Duration,
+	concurrency int,
+	configure func(*libstns.Options),
+) *Resolver {
+	t.Helper()
 	options := &libstns.Options{
 		AuthToken:      token,
 		RequestTimeout: int((timeout + time.Second - 1) / time.Second),
@@ -293,7 +402,7 @@ func newTestResolver(
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver, err := NewResolver(api, timeout)
+	resolver, err := NewResolver(api, timeout, concurrency)
 	if err != nil {
 		t.Fatal(err)
 	}

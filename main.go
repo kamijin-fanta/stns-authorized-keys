@@ -95,7 +95,7 @@ func main() {
 		)
 		os.Exit(1)
 	}
-	resolver, e := lookup.NewResolver(libClient, c.RequestTimeout)
+	resolver, e := lookup.NewResolver(libClient, c.RequestTimeout, c.RequestConcurrency)
 	if e != nil {
 		logger.Errorf(
 			"lookup user=%q failed reason=client_initialization error=%v",

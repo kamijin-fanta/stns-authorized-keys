@@ -18,6 +18,7 @@ ssl_verify = false
 request_timeout = 3
 request_retry = 3
 request_locktime = 5
+request_concurrency = 4
 
 [tls]
 ca = "ca.pem"
@@ -38,6 +39,7 @@ link_groups = ["group-name"]
 	}
 	if cfg.RequestTimeout != 3*time.Second || cfg.RequestRetry != 3 ||
 		cfg.RequestLocktime != 5*time.Second || cfg.SSLVerify ||
+		cfg.RequestConcurrency != 4 ||
 		cfg.Cached.CacheTTL != 5*time.Minute || cfg.Cached.StaleIfError != 24*time.Hour ||
 		!cfg.Cached.Enable || cfg.LogLevel != "info" || cfg.TLS.CA != "ca.pem" {
 		t.Fatalf("unexpected config: %+v", cfg)
@@ -63,7 +65,7 @@ func TestLoadDefaultsVerificationAndCaching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.SSLVerify || !cfg.Cached.Enable {
+	if !cfg.SSLVerify || !cfg.Cached.Enable || cfg.RequestConcurrency != 10 {
 		t.Fatalf("secure defaults not applied: %+v", cfg)
 	}
 }
@@ -104,11 +106,28 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 			1,
 		),
 		"certificate unpaired": base + "\n[tls]\ncert = \"client.pem\"\n",
-		"bad log level":        strings.Replace(base, "request_timeout = 3", "request_timeout = 3\nlog_level = \"verbose\"", 1),
-		"negative retry":       strings.Replace(base, "request_retry = 3", "request_retry = -1", 1),
-		"invalid linked user":  base + "\n[users.admin]\nlink_users = [\"bad\\nname\"]\n",
-		"empty linked group":   base + "\n[users.admin]\nlink_groups = [\"\"]\n",
-		"zero duration":        strings.Replace(base, "cache_ttl = 300", "cache_ttl = 0", 1),
+		"bad log level": strings.Replace(
+			base,
+			"request_timeout = 3",
+			"request_timeout = 3\nlog_level = \"verbose\"",
+			1,
+		),
+		"negative retry": strings.Replace(base, "request_retry = 3", "request_retry = -1", 1),
+		"zero concurrency": strings.Replace(
+			base,
+			"request_retry = 3",
+			"request_retry = 3\nrequest_concurrency = 0",
+			1,
+		),
+		"negative concurrency": strings.Replace(
+			base,
+			"request_retry = 3",
+			"request_retry = 3\nrequest_concurrency = -1",
+			1,
+		),
+		"invalid linked user": base + "\n[users.admin]\nlink_users = [\"bad\\nname\"]\n",
+		"empty linked group":  base + "\n[users.admin]\nlink_groups = [\"\"]\n",
+		"zero duration":       strings.Replace(base, "cache_ttl = 300", "cache_ttl = 0", 1),
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {

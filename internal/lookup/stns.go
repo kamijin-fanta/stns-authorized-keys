@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/STNS/STNS/v2/model"
@@ -31,20 +32,28 @@ const (
 )
 
 type Resolver struct {
-	api     *libstns.STNS
-	timeout time.Duration
+	api         *libstns.STNS
+	timeout     time.Duration
+	concurrency int
 }
 
 // NewResolver adds response classification and an exact overall timeout to an
 // initialized official libstns client.
-func NewResolver(api *libstns.STNS, timeout time.Duration) (*Resolver, error) {
+func NewResolver(
+	api *libstns.STNS,
+	timeout time.Duration,
+	concurrency int,
+) (*Resolver, error) {
 	if api == nil {
 		return nil, fmt.Errorf("libstns client is required")
 	}
 	if timeout <= 0 {
 		return nil, fmt.Errorf("request timeout must be positive")
 	}
-	return &Resolver{api: api, timeout: timeout}, nil
+	if concurrency <= 0 {
+		return nil, fmt.Errorf("request concurrency must be positive")
+	}
+	return &Resolver{api: api, timeout: timeout, concurrency: concurrency}, nil
 }
 
 func (r *Resolver) fetchUserKeys(ctx context.Context, user string) ([]string, Status, error) {
@@ -112,29 +121,116 @@ func (r *Resolver) ResolveAuthorizedKeys(
 	defer cancel()
 
 	users := append([]string(nil), sources.Users...)
-	for _, group := range unique(sources.Groups) {
-		members, status, err := r.fetchGroupMembers(requestCtx, group)
-		if status == NotFound {
-			continue
-		}
-		if status != OK {
-			return nil, status, err
-		}
+	memberSets, status, err := fetchConcurrently(
+		requestCtx,
+		unique(sources.Groups),
+		r.concurrency,
+		r.fetchGroupMembers,
+	)
+	if status != OK {
+		return nil, status, err
+	}
+	for _, members := range memberSets {
 		users = append(users, members...)
 	}
 
+	keySets, status, err := fetchConcurrently(
+		requestCtx,
+		unique(users),
+		r.concurrency,
+		r.fetchUserKeys,
+	)
+	if status != OK {
+		return nil, status, err
+	}
 	var keys []string
-	for _, user := range unique(users) {
-		userKeys, status, err := r.fetchUserKeys(requestCtx, user)
-		if status == NotFound {
-			continue
-		}
-		if status != OK {
-			return nil, status, err
-		}
+	for _, userKeys := range keySets {
 		keys = append(keys, userKeys...)
 	}
 	return unique(keys), OK, nil
+}
+
+type fetchResult struct {
+	value     []string
+	status    Status
+	err       error
+	completed bool
+}
+
+func fetchConcurrently(
+	ctx context.Context,
+	values []string,
+	concurrency int,
+	fetch func(context.Context, string) ([]string, Status, error),
+) ([][]string, Status, error) {
+	if len(values) == 0 {
+		return nil, OK, nil
+	}
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]fetchResult, len(values))
+	jobs := make(chan int)
+	workerCount := min(concurrency, len(values))
+	var workers sync.WaitGroup
+	var failureOnce sync.Once
+	var failure fetchResult
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					value, status, err := fetch(workerCtx, values[index])
+					results[index] = fetchResult{
+						value:     value,
+						status:    status,
+						err:       err,
+						completed: true,
+					}
+					if status != OK && status != NotFound {
+						failureOnce.Do(func() {
+							failure = results[index]
+							cancel()
+						})
+						return
+					}
+				}
+			}
+		}()
+	}
+
+enqueue:
+	for index := range values {
+		select {
+		case jobs <- index:
+		case <-workerCtx.Done():
+			break enqueue
+		}
+	}
+	close(jobs)
+	workers.Wait()
+
+	if failure.completed {
+		return nil, failure.status, failure.err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, Retryable, err
+	}
+	valuesByIndex := make([][]string, 0, len(results))
+	for _, result := range results {
+		if !result.completed || result.status == NotFound {
+			continue
+		}
+		valuesByIndex = append(valuesByIndex, result.value)
+	}
+	return valuesByIndex, OK, nil
 }
 
 func (r *Resolver) request(

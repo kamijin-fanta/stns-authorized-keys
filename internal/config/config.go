@@ -29,16 +29,17 @@ type UserLinks struct {
 }
 
 type Config struct {
-	APIEndpoint     string               `toml:"api_endpoint"`
-	AuthToken       string               `toml:"auth_token"`
-	SSLVerify       bool                 `toml:"ssl_verify"`
-	RequestTimeout  time.Duration        `toml:"request_timeout"`
-	RequestRetry    int                  `toml:"request_retry"`
-	RequestLocktime time.Duration        `toml:"request_locktime"`
-	LogLevel        string               `toml:"log_level"`
-	TLS             TLS                  `toml:"tls"`
-	Cached          Cached               `toml:"cached"`
-	Users           map[string]UserLinks `toml:"users"`
+	APIEndpoint        string               `toml:"api_endpoint"`
+	AuthToken          string               `toml:"auth_token"`
+	SSLVerify          bool                 `toml:"ssl_verify"`
+	RequestTimeout     time.Duration        `toml:"request_timeout"`
+	RequestRetry       int                  `toml:"request_retry"`
+	RequestLocktime    time.Duration        `toml:"request_locktime"`
+	RequestConcurrency int                  `toml:"request_concurrency"`
+	LogLevel           string               `toml:"log_level"`
+	TLS                TLS                  `toml:"tls"`
+	Cached             Cached               `toml:"cached"`
+	Users              map[string]UserLinks `toml:"users"`
 }
 
 type rawCached struct {
@@ -49,16 +50,17 @@ type rawCached struct {
 }
 
 type rawConfig struct {
-	APIEndpoint     string               `toml:"api_endpoint"`
-	AuthToken       string               `toml:"auth_token"`
-	SSLVerify       *bool                `toml:"ssl_verify"`
-	RequestTimeout  int64                `toml:"request_timeout"`
-	RequestRetry    int                  `toml:"request_retry"`
-	RequestLocktime int64                `toml:"request_locktime"`
-	LogLevel        string               `toml:"log_level"`
-	TLS             TLS                  `toml:"tls"`
-	Cached          rawCached            `toml:"cached"`
-	Users           map[string]UserLinks `toml:"users"`
+	APIEndpoint        string               `toml:"api_endpoint"`
+	AuthToken          string               `toml:"auth_token"`
+	SSLVerify          *bool                `toml:"ssl_verify"`
+	RequestTimeout     int64                `toml:"request_timeout"`
+	RequestRetry       int                  `toml:"request_retry"`
+	RequestLocktime    int64                `toml:"request_locktime"`
+	RequestConcurrency *int                 `toml:"request_concurrency"`
+	LogLevel           string               `toml:"log_level"`
+	TLS                TLS                  `toml:"tls"`
+	Cached             rawCached            `toml:"cached"`
+	Users              map[string]UserLinks `toml:"users"`
 }
 
 func Load(path string) (Config, error) {
@@ -79,15 +81,20 @@ func Load(path string) (Config, error) {
 	if r.Cached.Enable != nil {
 		cacheEnabled = *r.Cached.Enable
 	}
+	requestConcurrency := 10
+	if r.RequestConcurrency != nil {
+		requestConcurrency = *r.RequestConcurrency
+	}
 	c := Config{
-		APIEndpoint:     r.APIEndpoint,
-		AuthToken:       r.AuthToken,
-		SSLVerify:       sslVerify,
-		RequestTimeout:  seconds(r.RequestTimeout),
-		RequestRetry:    r.RequestRetry,
-		RequestLocktime: seconds(r.RequestLocktime),
-		LogLevel:        r.LogLevel,
-		TLS:             r.TLS,
+		APIEndpoint:        r.APIEndpoint,
+		AuthToken:          r.AuthToken,
+		SSLVerify:          sslVerify,
+		RequestTimeout:     seconds(r.RequestTimeout),
+		RequestRetry:       r.RequestRetry,
+		RequestLocktime:    seconds(r.RequestLocktime),
+		RequestConcurrency: requestConcurrency,
+		LogLevel:           r.LogLevel,
+		TLS:                r.TLS,
 		Cached: Cached{
 			Enable:       cacheEnabled,
 			CacheDir:     r.Cached.CacheDir,
@@ -104,6 +111,9 @@ func Load(path string) (Config, error) {
 	}
 	if c.RequestRetry < 0 {
 		return c, fmt.Errorf("request_retry must not be negative")
+	}
+	if c.RequestConcurrency <= 0 {
+		return c, fmt.Errorf("request_concurrency must be positive")
 	}
 	if c.APIEndpoint == "" {
 		return c, fmt.Errorf("api_endpoint is required")
