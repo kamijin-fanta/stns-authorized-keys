@@ -11,10 +11,16 @@ import (
 )
 
 type TLS struct {
-	CAFile        string `toml:"ca_file"`
-	CertFile      string `toml:"cert_file"`
-	KeyFile       string `toml:"key_file"`
-	SkipSSLVerify bool   `toml:"skip_ssl_verify"`
+	CA   string `toml:"ca"`
+	Cert string `toml:"cert"`
+	Key  string `toml:"key"`
+}
+
+type Cached struct {
+	Enable       bool          `toml:"enable"`
+	CacheDir     string        `toml:"cache_dir"`
+	CacheTTL     time.Duration `toml:"cache_ttl"`
+	StaleIfError time.Duration `toml:"stale_if_error"`
 }
 
 type UserLinks struct {
@@ -23,28 +29,35 @@ type UserLinks struct {
 }
 
 type Config struct {
-	Endpoint        string               `toml:"endpoint"`
+	APIEndpoint     string               `toml:"api_endpoint"`
 	AuthToken       string               `toml:"auth_token"`
-	CacheTTL        time.Duration        `toml:"cache_ttl"`
-	StaleIfError    time.Duration        `toml:"stale_if_error"`
+	SSLVerify       bool                 `toml:"ssl_verify"`
 	RequestTimeout  time.Duration        `toml:"request_timeout"`
-	CacheDir        string               `toml:"cache_dir"`
+	RequestRetry    int                  `toml:"request_retry"`
+	RequestLocktime time.Duration        `toml:"request_locktime"`
 	LogLevel        string               `toml:"log_level"`
-	LockWaitTimeout time.Duration        `toml:"lock_wait_timeout"`
 	TLS             TLS                  `toml:"tls"`
+	Cached          Cached               `toml:"cached"`
 	Users           map[string]UserLinks `toml:"users"`
 }
 
+type rawCached struct {
+	Enable       *bool  `toml:"enable"`
+	CacheDir     string `toml:"cache_dir"`
+	CacheTTL     int64  `toml:"cache_ttl"`
+	StaleIfError int64  `toml:"stale_if_error"`
+}
+
 type rawConfig struct {
-	Endpoint        string               `toml:"endpoint"`
+	APIEndpoint     string               `toml:"api_endpoint"`
 	AuthToken       string               `toml:"auth_token"`
-	CacheDir        string               `toml:"cache_dir"`
+	SSLVerify       *bool                `toml:"ssl_verify"`
+	RequestTimeout  int64                `toml:"request_timeout"`
+	RequestRetry    int                  `toml:"request_retry"`
+	RequestLocktime int64                `toml:"request_locktime"`
 	LogLevel        string               `toml:"log_level"`
-	CacheTTL        string               `toml:"cache_ttl"`
-	StaleIfError    string               `toml:"stale_if_error"`
-	RequestTimeout  string               `toml:"request_timeout"`
-	LockWaitTimeout string               `toml:"lock_wait_timeout"`
 	TLS             TLS                  `toml:"tls"`
+	Cached          rawCached            `toml:"cached"`
 	Users           map[string]UserLinks `toml:"users"`
 }
 
@@ -57,55 +70,64 @@ func Load(path string) (Config, error) {
 	if undecoded := md.Undecoded(); len(undecoded) != 0 {
 		return Config{}, fmt.Errorf("unknown configuration key %q", undecoded[0].String())
 	}
+
+	sslVerify := true
+	if r.SSLVerify != nil {
+		sslVerify = *r.SSLVerify
+	}
+	cacheEnabled := true
+	if r.Cached.Enable != nil {
+		cacheEnabled = *r.Cached.Enable
+	}
 	c := Config{
-		Endpoint:  r.Endpoint,
-		AuthToken: r.AuthToken,
-		CacheDir:  r.CacheDir,
-		LogLevel:  r.LogLevel,
-		TLS:       r.TLS,
-		Users:     r.Users,
-	}
-	parse := func(s string, d *time.Duration) error {
-		if s == "" {
-			return nil
-		}
-		var err error
-		*d, err = time.ParseDuration(s)
-		return err
-	}
-	for _, x := range []struct {
-		s string
-		d *time.Duration
-		n string
-	}{{r.CacheTTL, &c.CacheTTL, "cache_ttl"}, {r.StaleIfError, &c.StaleIfError, "stale_if_error"}, {r.RequestTimeout, &c.RequestTimeout, "request_timeout"}, {r.LockWaitTimeout, &c.LockWaitTimeout, "lock_wait_timeout"}} {
-		if err := parse(x.s, x.d); err != nil {
-			return c, fmt.Errorf("%s: %w", x.n, err)
-		}
-	}
-	if c.LockWaitTimeout == 0 {
-		c.LockWaitTimeout = time.Second
+		APIEndpoint:     r.APIEndpoint,
+		AuthToken:       r.AuthToken,
+		SSLVerify:       sslVerify,
+		RequestTimeout:  seconds(r.RequestTimeout),
+		RequestRetry:    r.RequestRetry,
+		RequestLocktime: seconds(r.RequestLocktime),
+		LogLevel:        r.LogLevel,
+		TLS:             r.TLS,
+		Cached: Cached{
+			Enable:       cacheEnabled,
+			CacheDir:     r.Cached.CacheDir,
+			CacheTTL:     seconds(r.Cached.CacheTTL),
+			StaleIfError: seconds(r.Cached.StaleIfError),
+		},
+		Users: r.Users,
 	}
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
 	}
-	if c.CacheTTL <= 0 || c.StaleIfError <= 0 || c.RequestTimeout <= 0 || c.LockWaitTimeout <= 0 {
-		return c, fmt.Errorf("durations must be positive")
+	if c.RequestTimeout <= 0 || c.RequestLocktime <= 0 {
+		return c, fmt.Errorf("request_timeout and request_locktime must be positive")
 	}
-	if c.Endpoint == "" || c.CacheDir == "" {
-		return c, fmt.Errorf("endpoint and cache_dir are required")
+	if c.RequestRetry < 0 {
+		return c, fmt.Errorf("request_retry must not be negative")
 	}
-	if !filepath.IsAbs(c.CacheDir) {
-		return c, fmt.Errorf("cache_dir must be absolute")
+	if c.APIEndpoint == "" {
+		return c, fmt.Errorf("api_endpoint is required")
 	}
-	u, err := url.Parse(c.Endpoint)
+	if c.Cached.Enable {
+		if c.Cached.CacheDir == "" {
+			return c, fmt.Errorf("cached.cache_dir is required when caching is enabled")
+		}
+		if !filepath.IsAbs(c.Cached.CacheDir) {
+			return c, fmt.Errorf("cached.cache_dir must be absolute")
+		}
+		if c.Cached.CacheTTL <= 0 || c.Cached.StaleIfError <= 0 {
+			return c, fmt.Errorf("cached.cache_ttl and cached.stale_if_error must be positive")
+		}
+	}
+	u, err := url.Parse(c.APIEndpoint)
 	if err != nil || u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
-		return c, fmt.Errorf("endpoint must be an http or https URL")
+		return c, fmt.Errorf("api_endpoint must be an http or https URL")
 	}
 	if u.User != nil || u.Fragment != "" || u.RawQuery != "" {
-		return c, fmt.Errorf("endpoint must not contain userinfo, query, or fragment")
+		return c, fmt.Errorf("api_endpoint must not contain userinfo, query, or fragment")
 	}
-	if c.TLS.CertFile != "" != (c.TLS.KeyFile != "") {
-		return c, fmt.Errorf("cert_file and key_file must be paired")
+	if c.TLS.Cert != "" != (c.TLS.Key != "") {
+		return c, fmt.Errorf("tls.cert and tls.key must be paired")
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warning", "error":
@@ -131,6 +153,10 @@ func Load(path string) (Config, error) {
 	return c, nil
 }
 
+func seconds(value int64) time.Duration {
+	return time.Duration(value) * time.Second
+}
+
 // LinksFor returns configured STNS links. A missing section preserves the
 // default behavior of looking up the Linux login user by the same STNS name.
 // An explicitly empty section intentionally resolves to no keys.
@@ -150,7 +176,7 @@ func (c Config) LinksFor(loginUser string) UserLinks {
 func (c Config) CacheNamespace(loginUser string) string {
 	links := c.LinksFor(loginUser)
 	var b strings.Builder
-	b.WriteString(c.Endpoint)
+	b.WriteString(c.APIEndpoint)
 	b.WriteString("\x00users")
 	for _, name := range links.LinkUsers {
 		b.WriteByte(0)

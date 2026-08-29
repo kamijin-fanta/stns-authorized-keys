@@ -315,6 +315,37 @@ func TestInvalidUsername(t *testing.T) {
 	}
 }
 
+func TestAuthorizedKeysWithoutCache(t *testing.T) {
+	result, err := AuthorizedKeys(
+		context.Background(),
+		"alice",
+		func(context.Context) ([]string, Status, error) {
+			return []string{testPublicKey + " alice"}, OK, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != OutcomeDisabled ||
+		string(result.Data) != testPublicKey+" alice\n" {
+		t.Fatalf("AuthorizedKeys() = %+v", result)
+	}
+}
+
+func TestAuthorizedKeysWithoutCachePropagatesFailure(t *testing.T) {
+	want := errors.New("upstream unavailable")
+	_, err := AuthorizedKeys(
+		context.Background(),
+		"alice",
+		func(context.Context) ([]string, Status, error) {
+			return nil, Retryable, want
+		},
+	)
+	if !errors.Is(err, want) {
+		t.Fatalf("AuthorizedKeys() error = %v; want %v", err, want)
+	}
+}
+
 func writeEntry(t *testing.T, dir string, data []byte, age time.Duration) {
 	t.Helper()
 	key := cache.Key(testNamespace, testUser)

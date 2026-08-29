@@ -13,32 +13,44 @@ AuthorizedKeysCommand /usr/bin/stns-authorized-keys %u
 AuthorizedKeysCommandUser stns-keys
 ```
 
+Logs are sent to journald. Pass `-v` or `--verbose` to also write them to
+standard error. Standard-error logging is enabled by default when standard
+error is attached to a terminal, and disabled by default otherwise.
+
 Example `/etc/stns-authorized-keys.conf`:
 
 ```toml
-endpoint = "https://stns.example.com/v1"
+api_endpoint = "https://stns.example.com/v1"
 auth_token = "..."
-cache_ttl = "5m"
-stale_if_error = "24h"
-request_timeout = "3s"
-cache_dir = "/run/stns-authorized-keys"
-lock_wait_timeout = "1s"
+ssl_verify = true
+request_timeout = 3
+request_retry = 3
+request_locktime = 5
 log_level = "info"
 
 [tls]
-# ca_file = "/etc/stns-authorized-keys/ca.pem"
-# cert_file = "/etc/stns-authorized-keys/client.pem"
-# key_file = "/etc/stns-authorized-keys/client-key.pem"
-# skip_ssl_verify = false
+# ca = "/etc/stns-authorized-keys/ca.pem"
+# cert = "/etc/stns-authorized-keys/client.pem"
+# key = "/etc/stns-authorized-keys/client-key.pem"
+
+[cached]
+enable = true
+cache_dir = "/run/stns-authorized-keys"
+cache_ttl = 300
+stale_if_error = 86400
 
 [users.admin]
 link_users = ["user-name"]
 link_groups = ["group-name"]
 ```
 
-`tls.skip_ssl_verify = true` disables server certificate verification. It is
-intended only for controlled testing; production configurations should leave it
-unset or `false`.
+Durations are specified in seconds. `ssl_verify = false` disables server
+certificate verification. It is intended only for controlled testing;
+production configurations should leave it `true` (the default).
+
+`request_retry` controls the number of upstream HTTP retries, and
+`request_locktime` controls how long this command waits to acquire the cache
+refresh lock. Set `cached.enable = false` to bypass the local cache entirely.
 
 `[users.<login-user>]` maps the Linux user passed by sshd to STNS sources.
 `link_users` fetches those STNS users directly. `link_groups` fetches each STNS

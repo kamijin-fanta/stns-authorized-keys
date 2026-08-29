@@ -15,9 +15,10 @@ type Result struct {
 }
 
 const (
-	OutcomeHit     = "hit"
-	OutcomeRefresh = "refresh"
-	OutcomeStale   = "stale"
+	OutcomeHit      = "hit"
+	OutcomeRefresh  = "refresh"
+	OutcomeStale    = "stale"
+	OutcomeDisabled = "disabled"
 
 	// futureMtimeTolerance allows minor skew between a cache file's modification
 	// time and the wall clock. One minute covers small clock corrections, while
@@ -37,8 +38,7 @@ func CachedAuthorizedKeys(
 	c Config,
 	fetch func(context.Context) ([]string, Status, error),
 ) (Result, error) {
-	if user == "" ||
-		strings.IndexFunc(user, func(r rune) bool { return r == 0 || r < 0x20 || r == 0x7f }) >= 0 {
+	if !validUsername(user) {
 		return Result{}, errors.New("invalid username")
 	}
 	if err := cache.ValidateDir(c.CacheDir); err != nil {
@@ -93,6 +93,35 @@ func CachedAuthorizedKeys(
 		e = errors.New("upstream failure")
 	}
 	return Result{}, e
+}
+
+// AuthorizedKeys resolves and normalizes keys without reading or writing the
+// local cache.
+func AuthorizedKeys(
+	ctx context.Context,
+	user string,
+	fetch func(context.Context) ([]string, Status, error),
+) (Result, error) {
+	if !validUsername(user) {
+		return Result{}, errors.New("invalid username")
+	}
+	keys, status, err := fetch(ctx)
+	if status != OK || err != nil {
+		if err == nil {
+			err = errors.New("upstream failure")
+		}
+		return Result{}, err
+	}
+	data, err := cache.Normalize(keys)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Data: data, Outcome: OutcomeDisabled}, nil
+}
+
+func validUsername(user string) bool {
+	return user != "" &&
+		strings.IndexFunc(user, func(r rune) bool { return r == 0 || r < 0x20 || r == 0x7f }) < 0
 }
 
 func usable(e cache.Entry, now time.Time, ttl time.Duration) bool {

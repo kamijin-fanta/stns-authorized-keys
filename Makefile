@@ -1,6 +1,6 @@
 GO ?= go
 GOLINES_VERSION ?= v0.15.0
-BUILD_OUTPUT ?= /tmp/stns-authorized-keys
+BUILD_OUTPUT ?= stns-authorized-keys
 
 .PHONY: format test test-race vet build check
 

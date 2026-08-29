@@ -1,17 +1,21 @@
-endpoint = "https://stns.example.com/v1"
+api_endpoint = "https://stns.example.com/v1"
 auth_token = "replace-me"
-cache_ttl = "5m"
-stale_if_error = "24h"
-request_timeout = "3s"
-cache_dir = "/run/stns-authorized-keys"
-lock_wait_timeout = "1s"
+ssl_verify = true
+request_timeout = 3
+request_retry = 3
+request_locktime = 5
 log_level = "info"
 
 [tls]
-# ca_file = "/etc/stns-authorized-keys/ca.pem"
-# cert_file = "/etc/stns-authorized-keys/client.pem"
-# key_file = "/etc/stns-authorized-keys/client-key.pem"
-# skip_ssl_verify = false
+# ca = "/etc/stns-authorized-keys/ca.pem"
+# cert = "/etc/stns-authorized-keys/client.crt"
+# key = "/etc/stns-authorized-keys/client-key.key"
+
+[cached]
+enable = true
+cache_dir = "/run/stns-authorized-keys"
+cache_ttl = 300
+stale_if_error = 86400
 
 [users.admin]
 link_users = ["user-name"]
