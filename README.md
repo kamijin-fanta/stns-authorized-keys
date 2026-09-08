@@ -84,9 +84,13 @@ make check
 ```
 
 Pushing a tag runs the GitHub Actions release workflow. It runs the tests with
-the race detector and `go vet`, then publishes Linux amd64 and arm64 archives
-and `checksums.txt` to GitHub Releases. Each archive includes the binary,
-example configuration, tmpfiles configuration, README, and license.
+the race detector and `go vet`, then publishes standalone Linux amd64 and arm64
+ELF binaries and `checksums.txt` to GitHub Releases. Download the binary for
+your architecture and make it executable with `chmod +x`. Configuration files
+are available in this repository.
+
+Run `stns-authorized-keys --version` to print the release tag embedded at build
+time. Local builds without an embedded version print `dev`.
 
 ```sh
 git tag 0.0.1
