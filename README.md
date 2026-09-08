@@ -82,3 +82,13 @@ Build and test from the repository root:
 make format
 make check
 ```
+
+Pushing a tag runs the GitHub Actions release workflow. It runs the tests with
+the race detector and `go vet`, then publishes Linux amd64 and arm64 archives
+and `checksums.txt` to GitHub Releases. Each archive includes the binary,
+example configuration, tmpfiles configuration, README, and license.
+
+```sh
+git tag 0.0.1
+git push origin 0.0.1
+```

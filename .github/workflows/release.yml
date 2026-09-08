@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test and vet
+        run: |
+          go test -race ./...
+          go vet ./...
+
+      - name: Build release archives
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            package="stns-authorized-keys_linux_${arch}"
+            mkdir -p "dist/${package}/tmpfiles.d"
+            GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "dist/${package}/stns-authorized-keys" .
+            cp README.md LICENSE stns-authorized-keys.conf.example "dist/${package}/"
+            cp tmpfiles.d/stns-authorized-keys.conf "dist/${package}/tmpfiles.d/"
+            tar -C dist -czf "dist/${package}.tar.gz" "$package"
+          done
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/checksums.txt --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
